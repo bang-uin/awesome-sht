@@ -12,6 +12,8 @@ local helpers		= require("lain.helpers")
 local cjson			= require("cjson")
 local session_path 	= "session.txt"
 
+local clients_restore_cache = {}
+
 local function dump(o)
    if type(o) == 'table' then
       local s = '{ \n'
@@ -94,10 +96,12 @@ local function save()
 						maximized_vertical = c.maximized_vertical,
 						maximized_horizontal = c.maximized_horizontal,
 						sticky = c.sticky,
-						floating = c.floating
+						floating = c.floating,
+						size_hints = c.size_hints
 					}
 				
 					-- Extract cmdline (we need to use xargs as spaces are replaced by NULs)
+					-- Consider that popen is sync but we need the data now and the command is fast
 					local command = "xargs -0 < " .. cmdFile
 					local handle = io.popen(command)
 					local cmdline = string.gsub(handle:read("*a"), "\n", "")
@@ -126,36 +130,46 @@ end
 
 local function spawn(restoredata, screens)
 	-- Spawn process
-	local pid = awful.spawn({restoredata.cmd, restoredata.cmd_args})
+	local new_pid = awful.spawn({restoredata.cmd, restoredata.cmd_args}, true, function(c) naughty.notify({text = c.pid}) end)
+
+	clients_restore_cache[new_pid] = { ["1"] = restoredata, ["2"] = screens }
 
 	-- Set layout rules for new client
 	table.insert(awful.rules.rules,
-				{ rule = { pid = pid },
+				{ 
+					rule = { pid = new_pid },
 					callback = function(c)
+						local restoredata = clients_restore_cache[c.pid]["1"]
+						local screens = clients_restore_cache[c.pid]["2"]
+
 						c:move_to_screen(screens[restoredata.screen].screen)
 						c:tags((function()
 							local tags = {}
 
 							for _,t in pairs(restoredata.tags) do
-								tags[#tags+1] = screens[restoredata.screen].tags[t]
+								table.insert(tags, screens[restoredata.screen].tags[t])
 							end
 
 							return tags
 						end)())
-						c.geometry = restoredata.geometry
+
+						c.floating = restoredata.floating
+						c.fullscreen = restoredata.fullscreen
 						c.minimized = restoredata.minimized
+						c.maximized = restoredata.maximized
+						c.maximized_vertical = restoredata.maximized_vertical
+						c.maximized_horizontal = restoredata.maximized_horizontal
 						c.hidden = restoredata.hidden
 						c.visible = restoredata.visible
 						c.opacity = restoredata.opacity
 						c.ontop = restoredata.ontop
 						c.above = restoredata.above
 						c.below = restoredata.below
-						c.fullscreen = restoredata.fullscreen
-						c.maximized = restoredata.maximized
-						c.maximized_vertical = restoredata.maximized_vertical
-						c.maximized_horizontal = restoredata.maximized_horizontal
 						c.sticky = restoredata.sticky
-						c.floating = restoredata.floating
+						c.geometry = restoredata.geometry
+						c.size_hints = size_hints
+
+						table.remove(clients_restore_cache, c.pid)
 					end
 				})
 end
