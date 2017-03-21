@@ -10,9 +10,11 @@ local naughty 		= require("naughty")
 local awful 		= require("awful")
 local helpers		= require("lain.helpers")
 local cjson			= require("cjson")
-local session_path 	= "session.txt"
 
-local clients_restore_cache = {}
+local session_path 	= "session.txt"
+local restoredata_cache = {}
+local start_id_cache = {}
+local client_map = {}
 
 local function dump(o)
    if type(o) == 'table' then
@@ -53,154 +55,219 @@ local function strsplit(delimiter, text)
 end
 
 local function save() 
-	clients = {}
-	pids = {}
+	local screens = {}
+	local pids = {}
+    local startup_id = 1
 
-	-- Iterate clients
-	for _, c in ipairs(client.get()) do
-		-- Check for valid PID
-		if c.pid then
-			-- Check for duplicate pid
-			if not pids[c.pid] then
-				pids[c.pid] = true
+    -- Iterate screen, tags and clients (json -> screens -> tags -> clients)
 
-				-- Construct pid file path
-				local cmdFile = "/proc/" .. c.pid .. "/cmdline"
+    -- Iterate screens
+    for s in screen do
+        local screen = {
+            index = s.index,
+            tags = {}
+        }
 
-				-- Check for cmdline file
-				if helpers.file_exists(cmdFile) then
-					-- Extract needed information
-					local state = {
-						pid = c.pid,
-						instance = c.instance,
-						class = c.class,
-						screen = c.screen.index,
-						tags = (function() 
-									local tags = {}
-									for k,t in pairs(c:tags()) do
-										table.insert(tags, t.index)
-									end
+        -- Iterate tags
+        for _,t in pairs(s.tags) do
+            local tag_clients = t:clients()
 
-									return tags 
-								end)(),
-						geometry = c:geometry(),
-						minimized = c.minimized,					
-						hidden = c.hidden,
-						visible = c.visible,
-						opacity = c.opacity,
-						ontop = c.ontop,
-						above = c.above,
-						below = c.below,
-						fullscreen = c.fullscreen,
-						maximized = c.maximized,
-						maximized_vertical = c.maximized_vertical,
-						maximized_horizontal = c.maximized_horizontal,
-						sticky = c.sticky,
-						floating = c.floating,
-						size_hints = c.size_hints
-					}
-				
-					-- Extract cmdline (we need to use xargs as spaces are replaced by NULs)
-					-- Consider that popen is sync but we need the data now and the command is fast
-					local command = "xargs -0 < " .. cmdFile
-					local handle = io.popen(command)
-					local cmdline = string.gsub(handle:read("*a"), "\n", "")
-					handle:close()
+            -- Skip empty tags
+            if next(tag_clients) ~= nil then
+                local tag = {
+                    name = t.name,
+                    layout = awful.layout.getname(t.layout),
+                    clients = {}
+                }
 
-					cmdline = strsplit(" ", cmdline)
-					state.cmd = cmdline[1]
-					state.cmd_args = table.concat(cmdline, " ", 2)
+                screen.tags[t.index] = tag
 
-					-- Save client
-					table.insert(clients, state)
-				else
-					naughty.notify({text = "Cannot save client \"" .. c.name .. "\"! NO PID FILE (" .. c.pid .. ")!"})
-				end
-			end
-		else
-			naughty.notify({text = "Cannot save client \"" .. c.name .. "\"! NO PID!"})
-		end
-	end
+                -- Iterate clients
+                for i,c in ipairs(tag_clients) do
+                    -- Check for valid PID
+                    if c.pid then
+                        -- Check for duplicate pid
+                        if not pids[c.pid] then
+                            pids[c.pid] = true
+
+                            --[[
+                                Construct pid file path
+                                Rely on proc filesystem to make sure the program runs in our space
+                            --]]
+                            local cmdFile = "/proc/" .. c.pid .. "/cmdline"
+
+                            -- Check for cmdline file
+                            if helpers.file_exists(cmdFile) then
+                                -- Extract needed information
+                                local client = {
+                                    pid = c.pid,
+                                    tag_index = i,
+                                    geometry = c:geometry(),
+                                    minimized = c.minimized,
+                                    hidden = c.hidden,
+                                    visible = c.visible,
+                                    opacity = c.opacity,
+                                    ontop = c.ontop,
+                                    above = c.above,
+                                    below = c.below,
+                                    fullscreen = c.fullscreen,
+                                    maximized = c.maximized,
+                                    maximized_vertical = c.maximized_vertical,
+                                    maximized_horizontal = c.maximized_horizontal,
+                                    sticky = c.sticky,
+                                    floating = c.floating
+                                }
+
+                                --[[
+                                    Extract cmdline (we need to use xargs as spaces are replaced by NULs)
+                                    Consider that popen is sync but we need the data now and the command is fast
+                                --]]
+                                local command = "xargs -0 < " .. cmdFile
+                                local handle = io.popen(command)
+                                local cmdline = string.gsub(handle:read("*a"), "\n", "")
+                                handle:close()
+
+                                cmdline = strsplit(" ", cmdline)
+                                client.cmd = cmdline[1]
+
+                                if table.getn(cmdline) > 1 then
+                                    client.cmd_args = table.concat(cmdline, " ", 2)
+                                end
+
+                                -- Save client
+                                tag.clients[client.tag_index] = client
+                            else
+                                naughty.notify({text = "Cannot save client \"" .. c.name .. "\"! NO PID FILE (" .. c.pid .. ")!"})
+                            end
+                        end
+                    else
+                        naughty.notify({text = "Cannot save client \"" .. c.name .. "\"! NO PID!"})
+                    end
+                end
+            end
+        end
+
+        screens[screen.index] = screen
+    end
 
 	-- Serialize clients
 	local file = io.open(session_path, "w")
-	file:write(cjson.encode(clients))
+	file:write(cjson.encode(screens))
 	file:close()
 end
 
-local function spawn(restoredata, screens)
-	-- Spawn process
-	local new_pid = awful.spawn({restoredata.cmd, restoredata.cmd_args}, true, function(c) naughty.notify({text = c.pid}) end)
+local function apply_layout()
+    -- Create sorted screen and tags table
+    local sscreens = {}
 
-	clients_restore_cache[new_pid] = { ["1"] = restoredata, ["2"] = screens }
+    for s in screen do
+        sscreens[s.index] = s
+    end
 
-	-- Set layout rules for new client
-	table.insert(awful.rules.rules,
-				{ 
-					rule = { pid = new_pid },
-					callback = function(c)
-						local restoredata = clients_restore_cache[c.pid]["1"]
-						local screens = clients_restore_cache[c.pid]["2"]
+    for _,s in pairs(restoredata_cache) do
+        -- Get real screen
+        local screen = sscreens[s.index]
 
-						c:move_to_screen(screens[restoredata.screen].screen)
-						c:tags((function()
-							local tags = {}
+        for _,t in pairs(s.tags) do
+            -- Get real tag
+            local tag = awful.tag.find_by_name(screen, t.name)
 
-							for _,t in pairs(restoredata.tags) do
-								table.insert(tags, screens[restoredata.screen].tags[t])
-							end
+            -- TODO: Restore tag layout. Doesn't seem to work.
+            --print(t.layout)
+            --awful.layout.set(t.layout, tag)
 
-							return tags
-						end)())
+            for i,c in ipairs(t.clients) do
+                -- Get real client
+                local ac = client_map[c.startup_id]
 
-						c.floating = restoredata.floating
-						c.fullscreen = restoredata.fullscreen
-						c.minimized = restoredata.minimized
-						c.maximized = restoredata.maximized
-						c.maximized_vertical = restoredata.maximized_vertical
-						c.maximized_horizontal = restoredata.maximized_horizontal
-						c.hidden = restoredata.hidden
-						c.visible = restoredata.visible
-						c.opacity = restoredata.opacity
-						c.ontop = restoredata.ontop
-						c.above = restoredata.above
-						c.below = restoredata.below
-						c.sticky = restoredata.sticky
-						c.geometry = restoredata.geometry
-						c.size_hints = size_hints
+                if ac ~= nil then
+                    ac:move_to_screen(screen)
+                    ac:tags({ tag })
+                    ac.floating = c.floating
 
-						table.remove(clients_restore_cache, c.pid)
-					end
-				})
+                    if ac.floating then
+                        ac:geometry(c.geometry)
+                    else
+                        ac:swap(tag:clients()[c.tag_index])
+                    end
+
+                    ac.fullscreen = c.fullscreen
+                    ac.minimized = c.minimized
+                    ac.maximized = c.maximized
+                    ac.maximized_vertical = c.maximized_vertical
+                    ac.maximized_horizontal = c.maximized_horizontal
+                    ac.hidden = c.hidden
+                    ac.visible = c.visible
+                    ac.opacity = c.opacity
+                    ac.ontop = c.ontop
+                    ac.above = c.above
+                    ac.below = c.below
+                    ac.sticky = c.sticky
+
+                    client_map[c.startup_id] = nil
+                end
+            end
+        end
+    end
+
+    -- Cleanup
+    client_map = {}
+    restoredata_cache = {}
+    start_id_cache = {}
+end
+
+local function client_appeared(c)
+    -- Check for valid pid
+    if c.pid ~= nil then
+        -- Extract start id
+        local envFile = "/proc/" .. c.pid .. "/environ"
+        local command = "xargs -0 < " .. envFile
+        local handle = io.popen(command)
+        --local s = string.match(handle:read("*a"), session_startup_id_prefix .. "=%d+")
+        local s = string.match(handle:read("*a"), "DESKTOP_STARTUP_ID=[%w%d%p]+")
+        handle:close()
+
+        -- Transfer data
+        if start_id_cache[s] ~= nil then
+            client_map[s] = c
+            start_id_cache[s] = nil
+        end
+
+        -- Apply layout if it is our last element
+        if next(start_id_cache) == nil then
+            client.disconnect_signal("manage", client_appeared)
+            apply_layout()
+        end
+    end
 end
 
 local function restore()
 	if helpers.file_exists(session_path) then
 		-- Deserialize table
 		local json = helpers.first_line(session_path)
-		local clients = cjson.decode(json)
+        restoredata_cache = cjson.decode(json)
 
-		-- Create sorted screen and tags table
-		local screens = {}
+        if restoredata_cache ~= nil and next(restoredata_cache) ~= nil then
+		    -- Iterate client states and call spwan
+            client.connect_signal("manage", client_appeared)
 
-		for s in screen do
-			local tags = {}
+            -- Iterate screen, tags and clients (json -> screens -> tags -> clients)
+            for _,s in pairs(restoredata_cache) do
+                for _,t in ipairs(s.tags) do
+                    for _,c in pairs(t.clients) do
+                        -- naughty.notify({text = "Restoring \"" .. c.cmd .. " " .. c.cmd_args .. "\""})
 
-			for k,t in pairs(s.tags) do
-				tags[t.index] = t
-			end
-
-			screens[s.index] = {
-				screen = s,
-				tags = tags
-			}
-		end
-
-		-- Iterate client states and call spwan
-		for i,c in ipairs(clients) do
-			naughty.notify({text = "Restoring \"" .. c.cmd .. " " .. c.cmd_args .. "\""})
-			spawn(c, screens)
-		end
+                        -- Spawn process
+                        local _, s = awful.spawn({c.cmd, c.cmd_args})
+                        s = "DESKTOP_STARTUP_ID=" .. s
+                        c.startup_id = s
+                        start_id_cache[c.startup_id] = true
+                    end
+                end
+            end
+        else
+            naughty.notify({text = "Session is empty" })
+        end
 	end
 end
 
