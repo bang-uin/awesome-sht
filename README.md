@@ -14,7 +14,7 @@ Show and control volume
 Currently save and restores open clients from all screens and tags.
 Depends on client PID. 
 
-- ~~[ ] Make it work with chroot facilities~~
+- [ ] ~~Make it work with chroot facilities~~
 - [ ] Restore placement/position
 
 
