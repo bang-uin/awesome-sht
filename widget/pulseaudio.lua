@@ -3,16 +3,13 @@
 --]]
 
 local newtimer     = require("lain.helpers").newtimer
-local read_pipe    = require("lain.helpers").read_pipe
 
 local awful        = require("awful")
 local beautiful    = require("beautiful")
-local naughty      = require("naughty")
 local wibox        = require("wibox")
 
 local math         = { modf   = math.modf,
                        floor  = math.floor }
-local mouse        = mouse
 local string       = { format = string.format,
                        match  = string.match,
                        gmatch = string.gmatch,
@@ -43,7 +40,6 @@ local function factory(args)
     local args       = args or {}
     local timeout    = args.timeout or 5
     local settings   = args.settings or function() end
-    local value      = "N/A"
 
     pulsebar.cmd           = args.cmd or "pacmd"
     pulsebar.default_sink  = args.default_sink or pulsebar.default_sink
@@ -135,17 +131,15 @@ local function factory(args)
         vol = vol * 0x10000
 
         awful.spawn({pulsebar.cmd, "set-sink-volume " .. pulsebar.default_sink .. " " .. string.format("0x%x", math.floor(vol))})
-
+        pulsebar.update()
     end
 
     function pulsebar.Up()
         pulsebar.SetVolume(pulsebar._current_level + pulsebar.step)
-        pulsebar.update()
     end
 
     function pulsebar.Down()
        	pulsebar.SetVolume(pulsebar._current_level - pulsebar.step)
-       	pulsebar.update()
     end
 
     function pulsebar.ToggleMute()

@@ -54,10 +54,23 @@ local function strsplit(delimiter, text)
 	return list
 end
 
+function pairsByKeys (t, f)
+    local a = {}
+    for n in pairs(t) do table.insert(a, n) end
+    table.sort(a, f)
+    local i = 0      -- iterator variable
+    local iter = function ()   -- iterator function
+        i = i + 1
+        if a[i] == nil then return nil
+        else return a[i], t[a[i]]
+        end
+    end
+    return iter
+end
+
 local function save() 
 	local screens = {}
 	local pids = {}
-    local startup_id = 1
 
     -- Iterate screen, tags and clients (json -> screens -> tags -> clients)
 
@@ -83,7 +96,7 @@ local function save()
                 screen.tags[t.index] = tag
 
                 -- Iterate clients
-                for i,c in ipairs(tag_clients) do
+                for i,c in pairsByKeys(tag_clients) do
                     -- Check for valid PID
                     if c.pid then
                         -- Check for duplicate pid
@@ -136,6 +149,7 @@ local function save()
 
                                 -- Save client
                                 tag.clients[client.tag_index] = client
+                                print(client.cmd .. " " .. client.tag_index)
                             else
                                 naughty.notify({text = "Cannot save client \"" .. c.name .. "\"! NO PID FILE (" .. c.pid .. ")!"})
                             end
@@ -156,10 +170,12 @@ local function save()
 	file:close()
 end
 
-local function apply_layout()
-    -- Create sorted screen and tags table
-    local sscreens = {}
 
+local function apply_layout()
+    local sscreens = {}
+    local tags = {}
+
+    -- Create sorted screen and tags table
     for s in screen do
         sscreens[s.index] = s
     end
@@ -169,14 +185,16 @@ local function apply_layout()
         local screen = sscreens[s.index]
 
         for _,t in pairs(s.tags) do
-            -- Get real tag
+            -- Get and save real tag
             local tag = awful.tag.find_by_name(screen, t.name)
+            tags[t.name] = tag
 
-            -- TODO: Restore tag layout. Doesn't seem to work.
-            --print(t.layout)
+            -- Set tag layout
+            print(t.layout)
             --awful.layout.set(t.layout, tag)
 
-            for i,c in ipairs(t.clients) do
+            -- Move clients to their screen and tag
+            for _,c in pairs(t.clients) do
                 -- Get real client
                 local ac = client_map[c.startup_id]
 
@@ -184,6 +202,23 @@ local function apply_layout()
                     ac:move_to_screen(screen)
                     ac:tags({ tag })
                     ac.floating = c.floating
+                end
+            end
+        end
+    end
+
+    for _,s in pairs(restoredata_cache) do
+        for _,t in pairs(s.tags) do
+            -- Get real tag
+            local tag = tags[t.name]
+
+            -- Sort, place and relayout clients
+            for _,c in pairsByKeys(t.clients) do
+                -- Get real client
+                local ac = client_map[c.startup_id]
+
+                if ac ~= nil then
+                    print(c.cmd .. " " .. c.tag_index)
 
                     if ac.floating then
                         ac:geometry(c.geometry)
@@ -259,9 +294,12 @@ local function restore()
 
                         -- Spawn process
                         local _, s = awful.spawn({c.cmd, c.cmd_args})
-                        s = "DESKTOP_STARTUP_ID=" .. s
-                        c.startup_id = s
-                        start_id_cache[c.startup_id] = true
+
+                        if s ~= nil then
+                            s = "DESKTOP_STARTUP_ID=" .. s
+                            c.startup_id = s
+                            start_id_cache[c.startup_id] = true
+                        end
                     end
                 end
             end
